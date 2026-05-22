@@ -1,118 +1,148 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Post } from '@/types'
-import { Heart, MessageCircle, Share2, MoreHorizontal } from 'lucide-react'
-import { useUserStore } from '@/store/useUserStore'
+import { PostCard } from '@/components/feed/PostCard'
+import { PostComposer } from '@/components/feed/PostComposer'
+import { StoriesBar } from '@/components/stories/StoriesBar'
+import { motion } from 'framer-motion'
+import { Sparkles } from 'lucide-react'
 
 export default function FeedPage() {
   const [posts, setPosts] = useState<Post[]>([])
-  const { user } = useUserStore()
+  const [loading, setLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState<'for-you' | 'following'>('for-you')
   const supabase = createClient()
+
+  const fetchPosts = useCallback(async () => {
+    const { data } = await supabase
+      .from('posts')
+      .select(
+        `
+        *,
+        profiles(*),
+        media_files(*),
+        post_reactions(count),
+        comments(count),
+        reposts(count)
+      `
+      )
+      .is('parent_post_id', null)
+      .eq('is_reel', false)
+      .order('created_at', { ascending: false })
+      .limit(30)
+
+    if (data) {
+      setPosts(
+        data.map((p: any) => ({
+          ...p,
+          reactions_count: p.post_reactions?.[0]?.count ?? 0,
+          comments_count: p.comments?.[0]?.count ?? 0,
+          reposts_count: p.reposts?.[0]?.count ?? 0,
+        }))
+      )
+    }
+    setLoading(false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     fetchPosts()
-  }, [])
 
-  const fetchPosts = async () => {
-    const { data, error } = await supabase
-      .from('posts')
-      .select('*, profiles(*), media_files(*)')
-      .order('created_at', { ascending: false })
-      
-    if (!error && data) {
-      setPosts(data)
+    // Real-time new posts
+    const channel = supabase
+      .channel('feed')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'posts' },
+        () => {
+          fetchPosts()
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
     }
-  }
-
-  const [content, setContent] = useState('')
-
-  const handleCreatePost = async () => {
-    if (!content.trim() || !user) return
-    const { error } = await supabase.from('posts').insert({
-      user_id: user.id,
-      content
-    })
-    if (!error) {
-      setContent('')
-      fetchPosts()
-    }
-  }
+  }, [fetchPosts])
 
   return (
-    <div className="max-w-2xl mx-auto min-h-screen border-x">
-      <div className="sticky top-0 z-10 bg-background/80 backdrop-blur-md border-b p-4">
-        <h1 className="text-xl font-bold">Home</h1>
+    <div className="max-w-[600px] mx-auto min-h-screen">
+      {/* Header */}
+      <div className="sticky top-0 z-30 backdrop-blur-xl bg-black/70 border-b border-white/5">
+        <div className="px-4 py-3 flex items-center justify-between">
+          <h1 className="text-xl font-black bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+            Home
+          </h1>
+          <Sparkles className="w-5 h-5 text-blue-400" />
+        </div>
+
+        {/* Tabs */}
+        <div className="flex">
+          {(['for-you', 'following'] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`flex-1 py-3 text-sm font-semibold capitalize transition relative ${
+                activeTab === tab
+                  ? 'text-white'
+                  : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              {tab === 'for-you' ? 'For You' : 'Following'}
+              {activeTab === tab && (
+                <motion.div
+                  layoutId="feedTab"
+                  className="absolute bottom-0 left-1/2 -translate-x-1/2 w-12 h-1 bg-blue-500 rounded-full"
+                />
+              )}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {user && (
-        <div className="p-4 border-b flex flex-col gap-4">
-          <textarea
-            className="w-full bg-transparent resize-none outline-none text-lg placeholder:text-muted-foreground"
-            placeholder="What's on your mind?"
-            rows={3}
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-          />
-          <div className="flex justify-end">
-            <button 
-              onClick={handleCreatePost}
-              className="bg-primary text-primary-foreground px-6 py-2 rounded-full font-bold hover:opacity-90 transition-opacity"
-            >
-              Post
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Stories */}
+      <StoriesBar />
 
-      <div className="divide-y">
-        {posts.map((post) => (
-          <article key={post.id} className="p-4 hover:bg-secondary/20 transition-colors">
-            <div className="flex gap-3">
-              <div className="w-10 h-10 rounded-full bg-secondary shrink-0 overflow-hidden">
-                {post.profiles?.avatar_url && (
-                  <img src={post.profiles.avatar_url} alt="" className="w-full h-full object-cover" />
-                )}
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="font-bold hover:underline cursor-pointer">{post.profiles?.display_name}</span>
-                    <span className="text-muted-foreground ml-2 text-sm">@{post.profiles?.username}</span>
-                  </div>
-                  <button className="text-muted-foreground hover:text-foreground"><MoreHorizontal className="w-5 h-5" /></button>
-                </div>
-                
-                <p className="mt-2 text-[15px] leading-relaxed whitespace-pre-wrap">{post.content}</p>
-                
-                {post.media_files && post.media_files.length > 0 && (
-                  <div className="mt-3 rounded-2xl overflow-hidden border">
-                    <img src={post.media_files[0].url} alt="Post media" className="w-full h-auto" />
-                  </div>
-                )}
+      {/* Composer */}
+      <PostComposer onPost={fetchPosts} />
 
-                <div className="flex items-center gap-6 mt-4 text-muted-foreground">
-                  <button className="flex items-center gap-2 hover:text-blue-500 transition-colors group">
-                    <div className="p-2 rounded-full group-hover:bg-blue-500/10"><MessageCircle className="w-5 h-5" /></div>
-                    <span className="text-sm">0</span>
-                  </button>
-                  <button className="flex items-center gap-2 hover:text-pink-500 transition-colors group">
-                    <div className="p-2 rounded-full group-hover:bg-pink-500/10"><Heart className="w-5 h-5" /></div>
-                    <span className="text-sm">0</span>
-                  </button>
-                  <button className="flex items-center gap-2 hover:text-green-500 transition-colors group">
-                    <div className="p-2 rounded-full group-hover:bg-green-500/10"><Share2 className="w-5 h-5" /></div>
-                  </button>
+      {/* Feed */}
+      <div>
+        {loading ? (
+          Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="p-4 border-b border-white/5 animate-pulse">
+              <div className="flex gap-3">
+                <div className="w-10 h-10 rounded-full bg-white/10" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-3 bg-white/10 rounded w-1/3" />
+                  <div className="h-3 bg-white/10 rounded w-full" />
+                  <div className="h-3 bg-white/10 rounded w-2/3" />
+                  <div className="h-24 bg-white/10 rounded-xl w-full mt-2" />
                 </div>
               </div>
             </div>
-          </article>
-        ))}
-        {posts.length === 0 && (
-          <div className="p-8 text-center text-muted-foreground">
-            No posts yet. Be the first to share something!
+          ))
+        ) : posts.length === 0 ? (
+          <div className="py-20 text-center">
+            <div className="text-5xl mb-4">✨</div>
+            <p className="text-white font-bold text-lg">Welcome to your feed!</p>
+            <p className="text-zinc-500 text-sm mt-1">
+              Follow people and share your first post.
+            </p>
           </div>
+        ) : (
+          posts.map((post, i) => (
+            <motion.div
+              key={post.id}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.05, duration: 0.3 }}
+            >
+              <PostCard post={post} onUpdate={fetchPosts} />
+            </motion.div>
+          ))
         )}
       </div>
     </div>
